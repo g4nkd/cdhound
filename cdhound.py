@@ -320,7 +320,7 @@ Specific technique to run:
     if proxies:
         print(f"[*] Using proxy: {args.proxy}")
 
-    techniques_to_run = [args.technique] if args.technique else ['default', 'osn', 'csn', 'fncr']
+    techniques_to_run = [args.technique] if args.technique else ['pd', 'osn', 'csn', 'fncr']
     recursion_depth = args.r
     static_dirs = None
 
@@ -344,7 +344,7 @@ Specific technique to run:
 
         test_urls = set()
 
-        if technique == 'default':
+        if technique == 'pd':
             extensions = [ext.strip() for ext in args.extensions.split(',') if ext.strip()]
             delimiters = read_delimiters(args.wordlist) if args.wordlist else DEFAULT_DELIMITERS
             print(f"[*] Using extensions: {extensions}")
@@ -420,7 +420,7 @@ Specific technique to run:
 def get_technique_description(technique: str) -> str:
     """Return a description of each testing technique."""
     descriptions = {
-        'default': "Testing for basic cache poisoning using different file extensions",
+        'pd': "Testing for basic cache poisoning using different file extensions",
         'osn': "Origin Server Normalization - Testing path traversal via static resource directories",
         'csn': "Client-Side Normalization - Testing path traversal with delimiters and static resources",
         'fncr': "Exploiting file name cache rules by testing common files with path traversal sequences",
