@@ -15,7 +15,7 @@ from tqdm import tqdm
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Constants
-DEFAULT_DELIMITERS = ['/', '!', ';', ',', ':', '|', '#', '?']
+DEFAULT_DELIMITERS = ['/', '!', ';', ',', ':', '|', '?']
 DEFAULT_EXTENSIONS = ['.js', '.css', '.png', '.jpg', '.html']
 MAX_THREADS = 10
 REQUEST_TIMEOUT = 15
@@ -59,10 +59,12 @@ def generate_random_chars(length: int = 3) -> str:
 def parse_header(header_str: str) -> Dict[str, str]:
     """Parse a header string in the format 'Name: Value'."""
     try:
+        if ':' not in header_str:
+            raise ValueError
         name, value = header_str.split(':', 1)
         return {name.strip(): value.strip()}
     except ValueError:
-        logging.error("Invalid header format. Use 'Name: Value' format.")
+        logging.error(f"Invalid header format: '{header_str}'. Use 'Name: Value' format.")
         sys.exit(1)
 
 def extract_static_directories(response_text: str, url: str, headers: Dict[str, str], proxies: Dict[str, str]) -> Set[str]:
@@ -169,21 +171,17 @@ def create_file_cache_test_urls(base_url: str, delimiters: List[str], static_fil
     parsed_url = urllib.parse.urlparse(base_url)
     test_urls = set()
 
-    # Get the actual path from the URL
     original_path = parsed_url.path.strip('/')
     if not original_path:
         original_path = ""
 
-    # Common files to test (base list + user-provided)
     common_files = ['robots.txt', 'index.html', 'index.php', 'sitemap.xml', 'favicon.ico', '404.html']
     if static_files:
         common_files.extend(static_files)
 
     for file in common_files:
         for delimiter in delimiters:
-            # Generate a random query string
             random_query = generate_random_chars()
-            # Create the test URL with delimiter and path traversal
             if original_path:
                 test_url = f"{parsed_url.scheme}://{parsed_url.netloc}/{original_path}{delimiter}%2f%2e%2e%2f{file}?{random_query}"
             else:
@@ -193,40 +191,31 @@ def create_file_cache_test_urls(base_url: str, delimiters: List[str], static_fil
     return test_urls
 
 def create_test_urls(base_url: str, delimiters: List[str], extensions: List[str]) -> Set[str]:
-    """Create test URLs combining delimiters and extensions."""
+    """Create test URLs combining delimiters and extensions (Manual String Construction)."""
     urls = set()
-    parsed_url = urllib.parse.urlparse(base_url)
-    path = parsed_url.path.rstrip('/')
+    
+    parsed = urllib.parse.urlparse(base_url)
+    path = parsed.path.rstrip('/')
+    clean_base = f"{parsed.scheme}://{parsed.netloc}{path}"
 
-    # Use default delimiters if none provided
     if not delimiters:
         delimiters = DEFAULT_DELIMITERS
 
-    # Test each combination of delimiter and extension
     for delimiter in delimiters:
         for ext in extensions:
             random_chars = generate_random_chars()
 
-            # Create path with delimiter
             if delimiter == '/':
-                new_path = f"{path}/{random_chars}{ext}"
+                new_url = f"{clean_base}/{random_chars}{ext}"
             else:
-                new_path = f"{path}{delimiter}{random_chars}{ext}"
+                new_url = f"{clean_base}{delimiter}{random_chars}{ext}"
 
-            new_url = urllib.parse.urlunparse((
-                parsed_url.scheme,
-                parsed_url.netloc,
-                new_path,
-                parsed_url.params,
-                parsed_url.query,
-                parsed_url.fragment
-            ))
             urls.add(new_url)
 
     return urls
 
-def check_cache_behavior(url: str, headers: Dict[str, str], proxies: Dict[str, str], verbose: bool = False) -> Tuple[str, bool, Dict, bool]:
-    """Check if a URL is vulnerable to cache poisoning."""
+def check_cache_behavior(url: str, headers: Dict[str, str], proxies: Dict[str, str], filter_header: Dict[str, str] = None, verbose: bool = False) -> Tuple[str, bool, Dict, bool]:
+    """Check if a URL is vulnerable to cache poisoning, applying optional filters."""
     try:
         request_headers = {
             'User-Agent': 'r4nd0m'
@@ -235,31 +224,74 @@ def check_cache_behavior(url: str, headers: Dict[str, str], proxies: Dict[str, s
 
         debug_info = {}
 
-        # First request
+        # -----------------------------------------------
+        # 1. First request (Authenticated / With Headers)
+        # -----------------------------------------------
         first_response = requests.get(url, headers=request_headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
         debug_info['first_status'] = first_response.status_code
         debug_info['first_cache'] = first_response.headers.get('X-Cache', '')
         debug_info['first_body'] = first_response.text
+        
+        # Capture Cache-Control for heuristic check
+        first_cache_control = first_response.headers.get('Cache-Control', '').lower()
 
-        # Second request (without cookies)
+        # -----------------------------------------------
+        # 2. Filter Check (Optional)
+        # -----------------------------------------------
+        if filter_header:
+            for key, required_value in filter_header.items():
+                actual_value = first_response.headers.get(key)
+                
+                if actual_value is None:
+                    if verbose:
+                        logging.info(f"Skipping {url}: Filter header '{key}' missing.")
+                    return url, False, debug_info, False
+                
+                if required_value.lower() not in actual_value.lower():
+                    if verbose:
+                        logging.info(f"Skipping {url}: Filter '{key}' value '{actual_value}' does not match '{required_value}'.")
+                    return url, False, debug_info, False
+
+        # -----------------------------------------------
+        # 3. Second request (Unauthenticated / No Cookies)
+        # -----------------------------------------------
         headers_without_cookies = request_headers.copy()
         headers_without_cookies.pop('Cookie', None)
+        headers_without_cookies.pop('Authorization', None)
 
         second_response = requests.get(url, headers=headers_without_cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
         debug_info['second_status'] = second_response.status_code
         debug_info['second_cache'] = second_response.headers.get('X-Cache', '')
         debug_info['second_body'] = second_response.text
 
-        # Check for vulnerability
-        is_vulnerable = (
-            first_response.status_code == 200 and
-            second_response.status_code == 200 and
-            first_response.text == second_response.text and
-            'miss' in debug_info['first_cache'].lower() and
-            'hit' in debug_info['second_cache'].lower()
-        )
+        # -----------------------------------------------
+        # 4. Vulnerability Check (UPDATED LOGIC)
+        # -----------------------------------------------
+        
+        # Scenario A: Strict Check (If X-Cache header exists)
+        has_x_cache = bool(debug_info['first_cache'] or debug_info['second_cache'])
+        
+        if has_x_cache:
+            is_vulnerable = (
+                first_response.status_code == 200 and
+                second_response.status_code == 200 and
+                first_response.text == second_response.text and
+                'miss' in debug_info['first_cache'].lower() and
+                'hit' in debug_info['second_cache'].lower()
+            )
+        else:
+            # Scenario B: Heuristic Check (Missing X-Cache, but Public + Same Body)
+            # If the response is explicitly public and unauth user gets same content as auth user
+            is_vulnerable = (
+                first_response.status_code == 200 and
+                second_response.status_code == 200 and
+                first_response.text == second_response.text and
+                'public' in first_cache_control and 
+                'no-store' not in first_cache_control
+            )
+            if is_vulnerable and verbose:
+                 logging.info(f"Potential vulnerability found via Heuristic (No X-Cache header): {url}")
 
-        # Check additional headers
         additional_headers = ['Vary', 'Pragma', 'Expires', 'Age', 'Cache-Control']
         for header in additional_headers:
             debug_info[f'first_{header.lower()}'] = first_response.headers.get(header, '')
@@ -285,7 +317,8 @@ def main():
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument('url', help='Target URL')
-    parser.add_argument('-H', '--header', required=True, help='Header in format "Name: Value" -> Used to authenticate requests')
+    parser.add_argument('-H', '--header', required=True, help='Header in format "Name: Value" -> Used to authenticate requests (Mandatory)')
+    parser.add_argument('-fh', '--filter-header', help='Filter header "Name: Value". Only proceed if first response contains this header/value.')
     parser.add_argument('-w', '--wordlist', help='Path to custom delimiters wordlist', default=None)
     parser.add_argument('-e', '--extensions', help='Comma-separated list of extensions to test (default: ".js,.css,.png")', default='.js,.css,.png')
     parser.add_argument('-s', '--static-files', help='Comma-separated list of additional static files to test (e.g., "static.js,config.json,/path/to/file.svg")', default='')
@@ -307,8 +340,12 @@ Specific technique to run:
     args = parser.parse_args()
 
     headers = {}
-    if args.header:
-        headers.update(parse_header(args.header))
+    headers.update(parse_header(args.header))
+
+    filter_header = None
+    if args.filter_header:
+        filter_header = parse_header(args.filter_header)
+        print(f"[*] Filter Header Enabled: {args.filter_header}")
 
     proxies = {}
     if args.proxy:
@@ -324,13 +361,10 @@ Specific technique to run:
     recursion_depth = args.r
     static_dirs = None
 
-    # Process static files argument
     static_files = []
     if args.static_files:
         static_files = [f.strip() for f in args.static_files.split(',') if f.strip()]
-        print(f"[*] Added {len(static_files)} custom static files:")
-        for file in static_files:
-            print(f"    - {file}")
+        print(f"[*] Added {len(static_files)} custom static files")
 
     total_techniques = len(techniques_to_run)
     current_technique = 0
@@ -347,9 +381,11 @@ Specific technique to run:
         if technique == 'pd':
             extensions = [ext.strip() for ext in args.extensions.split(',') if ext.strip()]
             delimiters = read_delimiters(args.wordlist) if args.wordlist else DEFAULT_DELIMITERS
+            
             print(f"[*] Using extensions: {extensions}")
             if delimiters:
-                print(f"[*] Using {len(delimiters)} delimiters")
+                print(f"[*] Using delimiters: {delimiters}")
+            
             test_urls = create_test_urls(args.url, delimiters, extensions)
 
         elif technique in ['osn', 'csn']:
@@ -370,7 +406,7 @@ Specific technique to run:
                 if technique == 'osn':
                     print(f"[*] Generating OSN test URLs with recursion depth {recursion_depth}...")
                     test_urls = create_osn_test_urls(args.url, static_dirs, recursion_depth)
-                else:  # csn technique
+                else:
                     delimiters = read_delimiters(args.wordlist) if args.wordlist else DEFAULT_DELIMITERS
                     print(f"[*] Loaded {len(delimiters)} delimiters")
                     print(f"[*] Generating CSN test URLs with recursion depth {recursion_depth}...")
@@ -390,7 +426,7 @@ Specific technique to run:
             vulnerable_urls = []
 
             with ThreadPoolExecutor(max_workers=args.threads) as executor:
-                futures = {executor.submit(check_cache_behavior, url, headers, proxies, args.verbose): url for url in test_urls}
+                futures = {executor.submit(check_cache_behavior, url, headers, proxies, filter_header, args.verbose): url for url in test_urls}
 
                 for future in tqdm(as_completed(futures), total=len(test_urls), desc="Testing URLs", unit="URL"):
                     url, is_vulnerable, debug_info, had_timeout = future.result()
@@ -399,11 +435,10 @@ Specific technique to run:
                     if is_vulnerable:
                         print(f"\n\033[32m[!] VULNERABLE URL FOUND!\033[0m")
                         print(f"\033[32m[!] URL: {url}\033[0m")
-                        print(f"[!] Cache behavior: {debug_info.get('first_cache')} -> {debug_info.get('second_cache')}")
                         print("[!] Authenticated content leaked to unauthenticated user!")
                         vulnerable_urls.append(url)
                     elif args.verbose:
-                        print(f"[+] Tested: {url} | Not vulnerable")
+                        print(f"[+] Tested: {url} | Not vulnerable (Status: {debug_info.get('first_status', 'Err')})")
 
             print(f"\n[*] Completed {technique.upper()} technique scan ({current_technique}/{total_techniques})")
 
