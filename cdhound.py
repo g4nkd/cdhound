@@ -285,7 +285,7 @@ def main():
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument('url', help='Target URL')
-    parser.add_argument('-H', '--header', help='Header in format "Name: Value" -> Used to authenticate requests')
+    parser.add_argument('-H', '--header', required=True, help='Header in format "Name: Value" -> Used to authenticate requests')
     parser.add_argument('-w', '--wordlist', help='Path to custom delimiters wordlist', default=None)
     parser.add_argument('-e', '--extensions', help='Comma-separated list of extensions to test (default: ".js,.css,.png")', default='.js,.css,.png')
     parser.add_argument('-s', '--static-files', help='Comma-separated list of additional static files to test (e.g., "static.js,config.json,/path/to/file.svg")', default='')
