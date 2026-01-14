@@ -50,22 +50,22 @@ Additionally, CacheDecepHound employs **discreet web poisoning** by randomizing 
 
 1. **Basic Test with Default Settings**:
    ```bash
-   python cdhound.py https://example.com -H "Cookie: XXX"
+   python cdhound.py https://example.com/profile -H "Cookie: XXX"
    ```
 
 2. **Test with Custom Delimiters and Extensions**:
    ```bash
-   python cdhound.py https://example.com -H "Cookie: XXX" -w delimiters.txt -e .js,.css,.html 
+   python cdhound.py https://example.com/my-account -H "Cookie: XXX" -w delimiters.txt -e .js,.css,.html 
    ```
 
 3. **Test with Specific Technique (OSN)**:
    ```bash
-   python cdhound.py https://example.com -H "Cookie: XXX" -T osn -r 2
+   python cdhound.py https://example.com/profile -H "Cookie: XXX" -T osn -r 2
    ```
 
 4. **Test with Proxy and Verbose Output**:
    ```bash
-   python cdhound.py https://example.com -H "Cookie: XXX" -p http://127.0.0.1:8080 -v
+   python cdhound.py https://example.com/account -H "Cookie: XXX" -p http://127.0.0.1:8080 -v
    ```
 
 ## Techniques Explained
@@ -88,69 +88,10 @@ This technique targets cache rules that are based on specific file names (e.g., 
 
 ---
 
-### Advanced Cache Detection with Burp Bambda
+## Labs
 
-Burp Suite’s Bambda mode lets you instantly filter HTTP traffic to find cached responses—saving hours of manual searching.
-Why This Matters
+You can test my tool in this lab:
+- [HackTheBox Web Challange - CDNio](https://app.hackthebox.com/challenges/CDNio?tab=play_challenge)
 
-Caching headers like X-Cache-Header, Age, Vary, and Expires reveal:
-- Cache hits/misses (hit, miss, refresh) → Is content being cached correctly?
-
-- Cache duration (Age, Expires) → How long is data stored?
-
-- Cache variations (Vary) → Does caching depend on headers like User-Agent?
-
-The Bambda Script:
-```
-if (!requestResponse.hasResponse()) return false;
-
-// Check for cache headers
-if (requestResponse.response().hasHeader("X-Cache")) {
-    String cacheStatus = requestResponse.response().headerValue("X-Cache").toLowerCase();
-    if (cacheStatus.contains("hit")) return true;
-}
-if (requestResponse.response().hasHeader("X-Cache")) {
-    String cacheStatus = requestResponse.response().headerValue("X-Cache").toLowerCase();
-    if (cacheStatus.contains("hit from")) return true;
-}
-if (requestResponse.response().hasHeader("CF-Cache-Status")) {
-    String cacheStatus = requestResponse.response().headerValue("CF-Cache-Status").toLowerCase();
-    if (cacheStatus.contains("hit")) return true;
-}
-
-// Check for Age/Vary
-if (requestResponse.response().hasHeader("Age")) {
-    return true;
-}
-
-// Check Expires (non-zero)
-if (requestResponse.response().hasHeader("Expires")) {
-    String expires = requestResponse.response().headerValue("Expires");
-    if (!expires.equals("0")) return true;
-}
-
-return false;
-```
-How to Use It
-
-- Paste into Burp’s Bambda editor (Proxy → Filter → Bambda).
-
-- Instantly see all cached responses.
-- Test for vulnerabilities:
-   - Cache poisoning (e.g., inject malicious X-Cache-Header).
-
-   - Sensitive data exposure (e.g., Age header on private API responses).
-
-After this maybe you'll discover some static files and you can add a parameter in the script `-s`
-- Examples:
-```bash
-python3 cdhound.py https://www.site.com/settings/profile -H "Cookie: XXX" -H "Authorization: XXX" -s 'avatar-builder/avatar_builder_clothing_selected.svg' -v
-python3 cdhound.py https://www.site.com/settings/profile -H "Cookie: XXX" -s 'static.js' -w delimeters-wordlist.txt
-```
-- Deep Scanning:
-```bash
-python3 cdhound.py https://www.site.com/settings/profile -H "Cookie: XXX" -v -s 'statics/static-file.svg,static.css' -w delimeters-wordlist.txt -e extensions-wordlist.txt -r 3
-```
 ---
-
 For more information on web cache poisoning and deception, refer to the [PortSwigger Web Security Academy](https://portswigger.net/web-security/web-cache-poisoning) and [Gotta Cache ‘em all bending the rules of web cache exploitation](https://www.youtube.com/watch?v=70yyOMFylUA).
