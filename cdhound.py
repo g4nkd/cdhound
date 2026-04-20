@@ -397,6 +397,28 @@ def check_cache_behavior(vector: Dict, auth_headers: Dict[str, str], proxies: Di
             debug['note'] = 'public endpoint (baseline == B)'
             return url, False, debug, False
 
+        # PHO false-positive filter: paths like /robots.txt and /favicon.ico are
+        # often already cached with their real content, which would match B and
+        # look like a leak even when the override was ignored. Fetch the same
+        # path with a cache-buster query to get an origin-fresh response; if B
+        # matches that, the override did nothing.
+        if override_header and override_value:
+            parsed_u = urllib.parse.urlparse(url)
+            cb_sep = '&' if parsed_u.query else '?'
+            probe_url = f"{url}{cb_sep}cb={generate_random_chars(8)}"
+            try:
+                probe_resp = requests.get(probe_url, headers=ua, proxies=proxies,
+                                          timeout=REQUEST_TIMEOUT, allow_redirects=False)
+                debug['probe_status'] = probe_resp.status_code
+                if probe_resp.status_code == 200:
+                    probe_body = probe_resp.text
+                    debug['probe_body_len'] = len(probe_body)
+                    if probe_body == auth_body or body_similarity(probe_body, auth_body) > 0.95:
+                        debug['note'] = 'override ignored (auth B matches origin-fresh probe)'
+                        return url, False, debug, False
+            except requests.exceptions.RequestException:
+                pass
+
         bodies_match = (auth_body == anon_retry_body)
         sim = body_similarity(auth_body, anon_retry_body)
         debug['similarity'] = round(sim, 3)
