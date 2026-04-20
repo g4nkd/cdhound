@@ -1,3 +1,4 @@
+.html
 .7z
 .csv
 .gif.7z
