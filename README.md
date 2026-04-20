@@ -1,8 +1,8 @@
-# CacheDecepHound
+# cdhound
 
 This tool is designed to test for web cache deception vulnerabilities by exploiting discrepancies in how web servers and caches handle URL paths, delimiters, and static resources. It automates the process of identifying and exploiting these vulnerabilities, making it easier for security researchers and penetration testers to assess the security of web applications.
 
-Additionally, CacheDecepHound employs **discreet web poisoning** by randomizing parameters during tests to avoid detection and minimize the impact on the site's traffic.
+Additionally, cdhound employs **discreet web poisoning** by randomizing parameters during tests to avoid detection and minimize the impact on the site's traffic.
 
 ## Features
 
@@ -20,12 +20,12 @@ Additionally, CacheDecepHound employs **discreet web poisoning** by randomizing 
 
 1. Clone the repository to your local machine:
    ```bash
-   git clone https://github.com/g4nkd/CacheDecepHound.git
+   git clone https://github.com/g4nkd/cdhound.git
    ```
 
 2. Navigate to the project directory:
    ```bash
-   cd CacheDecepHound
+   cd cdhound
    ```
 
 3. Install the required dependencies:
