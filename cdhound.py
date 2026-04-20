@@ -321,10 +321,14 @@ def check_cache_behavior(vector: Dict, auth_headers: Dict[str, str], proxies: Di
                          verbose: bool = False,
                          extra_markers: Optional[List[str]] = None,
                          delay: float = 0.3,
-                         retry_on_miss: bool = True) -> Tuple[str, bool, Dict, bool]:
+                         retry_on_miss: bool = True,
+                         baseline_body: str = '',
+                         baseline_markers: Optional[Set[str]] = None) -> Tuple[str, bool, Dict, bool]:
     url = vector['url']
     override_header = vector.get('override_header')
     override_value = vector.get('override_value')
+    if baseline_markers is None:
+        baseline_markers = set()
 
     ua = {'User-Agent': 'r4nd0m'}
     debug = {
@@ -334,15 +338,9 @@ def check_cache_behavior(vector: Dict, auth_headers: Dict[str, str], proxies: Di
     }
 
     try:
-        # Request A: anonymous baseline (no auth, no override)
-        resp_a = requests.get(url, headers=ua, proxies=proxies,
-                              timeout=REQUEST_TIMEOUT, allow_redirects=False)
-        debug['A_status'] = resp_a.status_code
-        debug['A_cache'] = extract_cache_info(resp_a)
-        baseline_body = resp_a.text if resp_a.status_code == 200 else ''
-        baseline_markers = extract_markers(baseline_body, extra_markers)
-
-        # Request B: authenticated (with optional override)
+        # Request B: authenticated must fire FIRST so the CDN caches the auth
+        # response. If an anon request went first, the CDN would cache the
+        # login redirect and every subsequent auth request would hit that 302.
         auth_req = ua.copy()
         auth_req.update(auth_headers)
         if override_header and override_value:
@@ -396,7 +394,7 @@ def check_cache_behavior(vector: Dict, auth_headers: Dict[str, str], proxies: Di
 
         # Endpoint is simply public — not a leak
         if baseline_body and baseline_body == auth_body:
-            debug['note'] = 'public endpoint (A == B)'
+            debug['note'] = 'public endpoint (baseline == B)'
             return url, False, debug, False
 
         bodies_match = (auth_body == anon_retry_body)
@@ -508,6 +506,25 @@ def main():
 
     sensitive_path = args.sensitive_path or urllib.parse.urlparse(args.url).path or '/'
 
+    # Anon baseline: fetched once against args.url (not per-vector) so we don't
+    # pollute the CDN cache of each test URL with an unauthenticated response.
+    baseline_body = ''
+    baseline_markers: Set[str] = set()
+    try:
+        baseline_resp = requests.get(
+            args.url, headers={'User-Agent': 'r4nd0m'}, proxies=proxies,
+            timeout=REQUEST_TIMEOUT, allow_redirects=False,
+        )
+        if baseline_resp.status_code == 200:
+            baseline_body = baseline_resp.text
+            baseline_markers = extract_markers(baseline_body, extra_markers)
+        print(
+            f"[*] Anon baseline: status={baseline_resp.status_code} "
+            f"body_len={len(baseline_body)} markers={len(baseline_markers)}"
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"[!] Could not establish anon baseline: {e}")
+
     techniques = [args.technique] if args.technique else ['pd', 'osn', 'csn', 'fncr', 'pho']
     total = len(techniques)
     static_dirs: Optional[Set[str]] = None
@@ -575,6 +592,7 @@ def main():
                 ex.submit(
                     check_cache_behavior, vec, headers, proxies, filter_header,
                     args.verbose, extra_markers, args.delay, not args.no_retry,
+                    baseline_body, baseline_markers,
                 ): vec for vec in vectors
             }
             for fut in tqdm(as_completed(futures), total=len(vectors), desc="Testing", unit="vec"):
