@@ -90,7 +90,8 @@ This technique targets cache rules that are based on specific file names (e.g., 
 
 ## Labs
 
-You can test my tool in this lab:
+You can test my tool in these labs:
+- [Port Swigger Labs](https://portswigger.net/web-security/all-labs#web-cache-deception)
 - [HackTheBox Web Challange - CDNio](https://app.hackthebox.com/challenges/CDNio?tab=play_challenge)
 
 ---
