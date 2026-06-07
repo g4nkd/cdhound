@@ -14,6 +14,7 @@ Requests use randomized parameters (`?<rand>`) so each test produces unique cach
 - **Cross-CDN cache detection**: Recognises cache status from Cloudflare, Fastly, Akamai, Vercel, Varnish, Nginx and others — not just `X-Cache`.
 - **Marker-based leak detection**: Extracts sensitive tokens (emails, UUIDs, JWTs, session IDs) from authenticated responses and confirms a leak when they reappear in anonymous responses.
 - **Static Resource Detection**: Automatically detects static resource directories and uses them to craft test URLs.
+- **Wildcard cache-rule testing**: Force known cacheable path prefixes (e.g. `/share/*`) into OSN to replicate "wildcard" cache-deception (the ChatGPT/Harel `/share/%2f..%2fapi/auth/session` pattern).
 - **Multi-threaded Testing**: Utilizes multiple threads to speed up the testing process.
 - **Verbose Output**: Provides detailed information about each test, including response headers and cache behavior.
 
@@ -45,6 +46,7 @@ Requests use randomized parameters (`?<rand>`) so each test produces unique cach
 - `-w, --wordlist`: Path to a custom wordlist of delimiters.
 - `-e, --extensions`: Comma-separated list of file extensions to test (default: `.js,.css,.png`).
 - `-s, --static-files`: Extra static filenames/paths to probe in FNCR and PHO.
+- `--cache-dirs`: Comma-separated cacheable path prefixes / wildcard cache rules to force into OSN (e.g. `/share,/api/public`). Tests `{prefix}/<traversal><sensitive>` and runs even when no static dirs are auto-discovered.
 - `-T, --technique`: Specify the technique to use (`pd`, `osn`, `csn`, `fncr`, `pho`).
 - `-r`: Recursion depth for OSN/CSN testing (default: 1).
 - `-v, --verbose`: Enable verbose output.
@@ -81,6 +83,11 @@ Requests use randomized parameters (`?<rand>`) so each test produces unique cach
    python cdhound.py https://example.com/account -H "Cookie: XXX" -p http://127.0.0.1:8080 -v
    ```
 
+6. **Wildcard cache rule (OSN) against a sensitive endpoint**:
+   ```bash
+   python cdhound.py https://example.com/api/auth/session -H "Cookie: XXX" -T osn --cache-dirs /share,/api/public
+   ```
+
 ## Techniques Explained
 
 ### Path Delimiter Testing (`pd`)
@@ -90,6 +97,8 @@ This technique tests for discrepancies in how delimiters (e.g., `;`, `,`, `#`) a
 ### Origin Server Normalization (`osn`)
 
 OSN exploits discrepancies in how the origin server normalizes URL paths compared to the cache. For example, if the origin server resolves path traversal sequences (e.g., `/static/..%2fprofile`) but the cache does not, an attacker can craft a URL that returns sensitive information from the origin server, which is then cached and served to other users.
+
+Static prefixes are auto-discovered, but when a cacheable prefix is a dynamic application route governed by a wildcard rule (e.g. `/share/*`) it won't be found by crawling — pass it explicitly with `--cache-dirs /share`. cdhound then crafts `{prefix}/<traversal><sensitive>` across several traversal encodings (`..%2f`, `%2f..%2f`, `%2e%2e%2f`, `%2f%2e%2e%2f`), covering the ChatGPT/Harel `/share/%2f..%2fapi/auth/session` payload.
 
 ### Cache Server Normalization (`csn`)
 
